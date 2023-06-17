@@ -57,7 +57,7 @@ This script attempts to un-minify JavaScript code by:
  * Using various heuristics to make some variable names more informative
  * Formatting the code for readability
 
-Note that the current implementation can take an extremely long time to perform uniquification, so use of the `-v|--verbose` flag is highly recommended for monitoring progress.  
+Note that the current implementation can take an extremely long time to perform uniquification, so use of the `-v|--verbose` flag is highly recommended for monitoring progress. For some codebases (e.g., some React Native deployments), the experimental `-L|--per-line` flag can reduce completion time exponentially.  
 
 ```
 $ node jsretk-unminify.js 
