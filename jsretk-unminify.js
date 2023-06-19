@@ -91,6 +91,7 @@ function renameAllInstancesOfIdentifier(ast, oldName, newName, options) {
 
 // (EXPERIMENTAL) "Smart Rename" via token sequence heuristic.
 // This function should preferably be used after uniquification.
+// Returns the number of variables that were renamed.
 //
 // Checker functions should be implemented as functions that take
 // an identifier string and run a heuristic to determine if the name
@@ -120,12 +121,12 @@ function smartRename_TokenOrderHeuristic(ast, options) {
     }
     if (options.goodNameCheckerFunc == null) {
         options.goodNameCheckerFunc = function (name) {
-            return !name.startsWith('i_') && name.length > 3;
+            return name != null && !name.startsWith('i_') && name.length > 3;
         };
     }
     if (options.badNameCheckerFunc == null) {
         options.badNameCheckerFunc = function (name) {
-            return RegExp('^i_([0-9]+_)?[0-9]+_$').test(name);
+            return name != null && RegExp('^i_([0-9]+_)?[0-9]+_$').test(name);
         };
     }
 
@@ -135,52 +136,99 @@ function smartRename_TokenOrderHeuristic(ast, options) {
     // variable is assigned to exactly one newName candidate before renaming it.
     var renameCandidates = {};
 
-    for (var i = 0; i < tokens.length-3; i++) {
-        var leftName = tokens[i];
-        var rightName = tokens[i+2];
-        if (leftName.type == 'Identifier'
-            && tokens[i+1].type == 'Punctuator'
-            && rightName.type == 'Identifier'
-            && tokens[i+3].type == 'Punctuator'
-            && tokens[i+1].value == '='
-            && ';,)}]'.indexOf(tokens[i+3].value) >= 0) {
+    for (var i = 0; i < tokens.length; i++) {
             
-            var oldName = null;
-            var newName = null;
+        var leftName = null;
+        var rightName = null;
+        var oldName = null;
+        var newName = null;
 
-            if (options.goodNameCheckerFunc(leftName.value) && options.badNameCheckerFunc(rightName.value)) {
-                // Found a candidate expression; rename right value to left value
-                oldName = rightName.value;
-                newName = options.renamePrefix + leftName.value + options.renameSuffix;
-            } else if (options.goodNameCheckerFunc(rightName.value) && options.badNameCheckerFunc(leftName.value)) {
-                // Found a candidate expression; rename left value to right value
-                oldName = leftName.value;
-                newName = options.renamePrefix + rightName.value + options.renameSuffix;
-            }
+        // Basic heuristic:
+        //   "goodName = badName;"  OR  "badName = goodName;"
+        if (i < tokens.length - 3
+            && tokens[i].type == 'Identifier'
+            && tokens[i+1].type == 'Punctuator' && tokens[i+1].value == '='
+            && tokens[i+2].type == 'Identifier'
+            && tokens[i+3].type == 'Punctuator' && ';,)}]'.indexOf(tokens[i+3].value) >= 0) {
+            
+            leftName = tokens[i].value;
+            rightName = tokens[i+2].value;
+        }
 
-            if (oldName != null && newName != null) {
-                if (oldName in renameCandidates) {
-                    if (renameCandidates[oldName].indexOf(newName) == -1) {
-                        renameCandidates[oldName].push(newName);
-                    }
-                } else {
-                    renameCandidates[oldName] = [ newName ];
+        // Basic heuristic:
+        //   "identifier['goodName'] = badName;" OR "identifier['badName'] = goodName;"
+        else if (i < tokens.length - 6
+                && tokens[i].type == 'Identifier'
+                && tokens[i+1].type == 'Punctuator' && tokens[i+1].value == '['
+                && tokens[i+2].type == 'String'
+                && tokens[i+3].type == 'Punctuator' && tokens[i+3].value == ']'
+                && tokens[i+4].type == 'Punctuator' && tokens[i+4].value == '='
+                && tokens[i+5].type == 'Identifier'
+                && tokens[i+6].type == 'Punctuator' && ';,)}]'.indexOf(tokens[i+6]) >= 0) {
+        
+            leftName = tokens[i+2].value;
+            leftName = leftName.slice(1, leftName.length-1); // Remove quotes
+            rightName = tokens[i+5].value;
+        }
+
+        // Basic heuristic:
+        //   "goodName = identifier['badName'];" OR "badName = identifier['goodName'];"
+        else if (i < tokens.length - 6
+                    && tokens[i].type == 'Identifier'
+                    && tokens[i+1].type == 'Punctuator' && tokens[i+1].value == '='
+                    && tokens[i+2].type == 'Identifier'
+                    && tokens[i+3].type == 'Punctuator' && tokens[i+3].value == '['
+                    && tokens[i+4].type == 'String'
+                    && tokens[i+5].type == 'Punctuator' && tokens[i+5].value == ']'
+                    && tokens[i+6].type == 'Punctuator' && ';,)}]'.indexOf(tokens[i+6]) >= 0) {
+        
+            leftName = tokens[i].value;
+            rightName = tokens[i+4].value;
+            rightName = rightName.slice(1, rightName.length-1); // Remove quotes
+        }
+
+        // Check for candidate token sequence
+        if (options.goodNameCheckerFunc(leftName) && options.badNameCheckerFunc(rightName)) {
+            // Found a candidate expression; rename right value to left value
+            oldName = rightName;
+            newName = options.renamePrefix + leftName + options.renameSuffix;
+        } else if (options.goodNameCheckerFunc(rightName) && options.badNameCheckerFunc(leftName)) {
+            // Found a candidate expression; rename left value to right value
+            oldName = leftName;
+            newName = options.renamePrefix + rightName + options.renameSuffix;
+        }
+
+        // Store candidate names for later review
+        if (oldName != null && newName != null) {
+            if (oldName in renameCandidates) {
+                if (renameCandidates[oldName].indexOf(newName) == -1) {
+                    renameCandidates[oldName].push(newName);
                 }
+            } else {
+                renameCandidates[oldName] = [ newName ];
             }
         }
     }
 
     // Rename candidates that have a unique assignment
+    var renameCount = 0;
     var oldNames = Object.keys(renameCandidates);
     for (var i = 0; i < oldNames.length; i++) {
         var oldName = oldNames[i];
         if (renameCandidates[oldName].length == 1) {
             // Candidate was only assigned to 1 unique name, so we'll use that name
             renameAllInstancesOfIdentifier(ast, oldName, renameCandidates[oldName][0], { verbose: options.verbose, logTag: logTag });
+            renameCount++;
         } else {
-            console.error(logTag + 'Multiple name candidates found for ' + oldName + ' (skipping rename): ' + renameCandidates[oldName]);
+            if (options.verbose) {
+                console.error(logTag + 'Multiple name candidates found for ' + oldName + ' (skipping rename): ' + renameCandidates[oldName]);
+            }
         }
     }
+    if (options.verbose) {
+        console.error(logTag + 'Renamed ' + renameCount + ' variable' + (renameCount == 1 ? '' : 's'));
+    }
+    return renameCount;
 }
 
 
