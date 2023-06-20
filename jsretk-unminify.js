@@ -7,6 +7,8 @@
 //
 // @TODO:
 //      - Create iterative (temporary?) backups after each major step
+//      - More replacement heuristics:
+//          - https://garote.livejournal.com/231284.html
 //
 // System package requirements:
 //     curl
@@ -15,29 +17,33 @@
 // NodeJS package requirements:
 //     escodegen
 //     esprima
-//     esrefactor
 //     estraverse
 
 const { parseArgs } = require('util');
 
-const child_process = require('child_process');
 const escodegen = require('escodegen');
 const esprima = require('esprima');
-const esrefactor = require('esrefactor');
 const estraverse = require('estraverse');
 const fs = require('fs');
 const path = require('path');
 const urlUtils = require('url');
 
+const esrefactor = require('./lib/esrefactor-pr9');
+const jsretkLib = require('./lib/jsretk-lib');
 
+
+const ONE_MEGABYTE = 1024*1024;
+const DEFAULT_MAX_BUF_SZ = ONE_MEGABYTE*50;  // 50MB
 const DEFAULT_INDENT_LEVEL = 4;
 const DEFAULT_OUTDIR = 'jsretk-out';
 const DEFAULT_RENAME_LENGTH_THRESHOLD = 2;  // Rename variables if names are shorter than or equal to this value
+
 
 function printUsage() {
     console.log('Usage:\n\n' + path.basename(process.argv[0]) + ' ' + path.basename(process.argv[1]) + ' [OPTIONS] <JS_FILE_1> [[JS_FILE_2] ...]' +
                 '\n\nOptions:\n' +
                 '\n\t[-h|--help]\t\tPrint usage and exit' +
+                '\n\t[-P|--stdin]\t\tPipe data from stdin' +
                 '\n\t[-v|--verbose]\t\tEnable verbose output' +
                 '\n\t[-o|--output-dir] <dir>\tOutput directory (default: "' + DEFAULT_OUTDIR + '")' +
                 '\n\t[-O|--overwrite]\tIf output file(s) exist, automatically overwrite' +
@@ -46,10 +52,12 @@ function printUsage() {
                 '\n\t[-r|--rename-len] <n>\tRename variables if names are shorter than or equal to this value (default: ' + DEFAULT_RENAME_LENGTH_THRESHOLD + ' character' + (DEFAULT_RENAME_LENGTH_THRESHOLD==1 ? '' : 's') + ')' +
                 '\n\t[-R|--no-rename]\tDon\'t rename variables to unique names' +
                 '\n\t[-F|--no-format]\tDon\'t format the code for readability' +
+                '\n\t[-C|--char-iter]\tIterate over characters instead of tokens during refactoring. Significantly slower; may produce slightly different output' +
                 '\n\t[-s|--smart-rename]\t(EXPERIMENTAL) Use various heuristics to attempt to generate more informative variable names' +
                 '\n\t[-L|--per-line]\t\t(EXPERIMENTAL) Attempt to refactor code line by line (rather than the whole file at once). Useful for some react-native deployments, but fails on many (most?) codebases' +
                 '\n\t[-k|--insecure]\t\tDon\'t verify TLS/SSL certificates for connections when fetching remotely-hosted JS files' +
                 '\n\t[-p|--curl-path] <path>\tNon-standard path/name for the curl command' +
+                '\n\t[-B|--max-buffer] <n>\tMaximum size (in bytes) for remotely-fetched JS files (default: ' + Math.floor(DEFAULT_MAX_BUF_SZ/ONE_MEGABYTE) + 'MB)' +
                 '\n\t[-i|--interactive]\tEnter interactive NodeJS prompt after completion'
     );
     process.exit();
@@ -121,7 +129,7 @@ function smartRename_TokenOrderHeuristic(ast, options) {
     }
     if (options.goodNameCheckerFunc == null) {
         options.goodNameCheckerFunc = function (name) {
-            return name != null && !name.startsWith('i_') && name.length > 3;
+            return name != null && !name.startsWith('i_') && RegExp('^[a-zA-Z0-9_$]+$').test(name) && name.length > 3;
         };
     }
     if (options.badNameCheckerFunc == null) {
@@ -135,6 +143,8 @@ function smartRename_TokenOrderHeuristic(ast, options) {
     // Some variables are re-used to hold unrelated data, so we verify that each
     // variable is assigned to exactly one newName candidate before renaming it.
     var renameCandidates = {};
+    // Avoid duplicates in output variable names by building a map of counters
+    var newNames = {};
 
     for (var i = 0; i < tokens.length; i++) {
             
@@ -160,7 +170,7 @@ function smartRename_TokenOrderHeuristic(ast, options) {
         else if (i < tokens.length - 6
                 && tokens[i].type == 'Identifier'
                 && tokens[i+1].type == 'Punctuator' && tokens[i+1].value == '['
-                && tokens[i+2].type == 'String'
+                && (tokens[i+2].type == 'String' || (tokens[i+2].type == 'Template' && tokens[i+2].value.startsWith('`') && tokens[i+2].value.endsWith('`')))
                 && tokens[i+3].type == 'Punctuator' && tokens[i+3].value == ']'
                 && tokens[i+4].type == 'Punctuator' && tokens[i+4].value == '='
                 && tokens[i+5].type == 'Identifier'
@@ -178,7 +188,7 @@ function smartRename_TokenOrderHeuristic(ast, options) {
                     && tokens[i+1].type == 'Punctuator' && tokens[i+1].value == '='
                     && tokens[i+2].type == 'Identifier'
                     && tokens[i+3].type == 'Punctuator' && tokens[i+3].value == '['
-                    && tokens[i+4].type == 'String'
+                    && (tokens[i+4].type == 'String' || (tokens[i+4].type == 'Template' && tokens[i+4].value.startsWith('`') && tokens[i+4].value.endsWith('`')))
                     && tokens[i+5].type == 'Punctuator' && tokens[i+5].value == ']'
                     && tokens[i+6].type == 'Punctuator' && ';,)}]'.indexOf(tokens[i+6]) >= 0) {
         
@@ -191,11 +201,11 @@ function smartRename_TokenOrderHeuristic(ast, options) {
         if (options.goodNameCheckerFunc(leftName) && options.badNameCheckerFunc(rightName)) {
             // Found a candidate expression; rename right value to left value
             oldName = rightName;
-            newName = options.renamePrefix + leftName + options.renameSuffix;
+            newName = leftName;
         } else if (options.goodNameCheckerFunc(rightName) && options.badNameCheckerFunc(leftName)) {
             // Found a candidate expression; rename left value to right value
             oldName = leftName;
-            newName = options.renamePrefix + rightName + options.renameSuffix;
+            newName = rightName;
         }
 
         // Store candidate names for later review
@@ -215,10 +225,19 @@ function smartRename_TokenOrderHeuristic(ast, options) {
     var oldNames = Object.keys(renameCandidates);
     for (var i = 0; i < oldNames.length; i++) {
         var oldName = oldNames[i];
+
         if (renameCandidates[oldName].length == 1) {
             // Candidate was only assigned to 1 unique name, so we'll use that name
-            renameAllInstancesOfIdentifier(ast, oldName, renameCandidates[oldName][0], { verbose: options.verbose, logTag: logTag });
+            var newName = renameCandidates[oldName][0];
+            var tmpNewName = 'tmp_' + newName;  // Some new names are built-in properties (e.g., protoypes), so we need to pre-pend something to avoid dangerous name collisions
+            if (newNames[tmpNewName] == null) {
+                newNames[tmpNewName] = 0;
+            }
+            var newNameFinal = options.renamePrefix + newName + '_' + newNames[tmpNewName] + options.renameSuffix;
+            renameAllInstancesOfIdentifier(ast, oldName, newNameFinal, { verbose: options.verbose, logTag: logTag });
+            newNames[tmpNewName]++; // Iterate counter to keep new names unique
             renameCount++;
+
         } else {
             if (options.verbose) {
                 console.error(logTag + 'Multiple name candidates found for ' + oldName + ' (skipping rename): ' + renameCandidates[oldName]);
@@ -240,8 +259,9 @@ function smartRename_TokenOrderHeuristic(ast, options) {
 //       namePrefix: 'i_',
 //       nameSuffix: '_',
 //       verbose: false,
-//       lineNumber: -1,  // EXPERIMENTAL
-//       lineCount: -1,  // EXPERIMENTAL
+//       iterateOverChars: false,
+//       groupNumber: -1,
+//       groupCount: -1
 //   }
 function uniquifyVariableNames(sourceCode, options) {
     if (options == null) {
@@ -264,44 +284,87 @@ function uniquifyVariableNames(sourceCode, options) {
     if (options.verbose == null) {
         options.verbose = false;
     }
-    // EXPERIMENTAL: Used for experimental line-by-line mode
-    if (options.lineNumber == null) {
-        options.lineNumber = -1;
+    if (options.iterateOverChars == null) {
+        options.iterateOverChars = false;
     }
     // EXPERIMENTAL: Used for experimental line-by-line mode
-    if (options.lineCount == null) {
-        options.lineCount = -1;
+    if (options.groupNumber == null) {
+        options.groupNumber = -1;
+    }
+    // EXPERIMENTAL: Used for experimental line-by-line mode
+    if (options.groupCount == null) {
+        options.groupCount = -1;
     }
 
     var varCount = 0; // Number of variables that have been renamed thus far
 
     var i = 0;
     var startTimeMs = Date.now();
-    var esrCtx = new esrefactor.Context(sourceCode);
-    while (i < sourceCode.length) {
-        if (options.verbose) {
-            process.stderr.write('  [Refactor|Uniquify' + ((options.lineNumber<0 || options.lineCount<0) ? '' : ('|Line-by-Line ('+options.lineNumber+'/'+options.lineCount)+')') + '] ' + (i+1) + '/' + sourceCode.length + ' (~' + (Math.floor((i/sourceCode.length)*10000)/100) + '%) | Elapsed: ' + Math.floor(((Date.now()-startTimeMs)/1000)/60) + ' minutes | Renamed variables: ' + varCount + '\r');
-        }
-        var id = null;
-        try {
-            id = esrCtx.identify(i);
-        } catch (err) {
-            console.error('');
-            console.error(err);
-        }
-        if (id != null) {
-            // Found a variable identifier
-            var idEnd = i + id.identifier.name.length;
-            if (id.identifier.name.length <= options.lengthThreshold) {
-                // Found a variable that will be renamed
-                var newVarName = options.namePrefix + varCount + options.nameSuffix;
-                varCount++;
-                sourceCode = esrCtx.rename(id, newVarName);
-                esrCtx = new esrefactor.Context(sourceCode);
+    var id = null;
+    var tokens = null;
+    var esrCtx = null;
+
+    tokens = esprima.tokenize(sourceCode, {comment: true, range: true});
+
+    if (!options.iterateOverChars) {
+        // Iterate over tokens
+        // https://apis.google.com/js/platform.js Renamed variables: 1025
+        while (i < tokens.length) {
+            var tok = tokens[i];
+            if (options.verbose) {
+                process.stderr.write('  [Refactor|Uniquify' + ((options.groupNumber<0 || options.groupCount<0) ? '' : ('|Line-by-Line ('+options.groupNumber+'/'+options.groupCount)+')') + '] ' + (tok.range[0]+1) + '/' + sourceCode.length + ' (~' + (Math.floor((tok.range[0]/sourceCode.length)*10000)/100) + '%) | Elapsed: ' + Math.floor(((Date.now()-startTimeMs)/1000)/60) + ' minutes | Renamed variables: ' + varCount + '\r');
             }
-            i = idEnd;
-        } else {
+            if (tok.type === 'Identifier' && tok.value.length <= options.lengthThreshold) {
+                esrCtx = new esrefactor.Context(sourceCode);
+                try {
+                    id = esrCtx.identify(tok.range[0]);
+                } catch (err) {
+                    console.error('');
+                    console.error(err);
+                }
+                if (id != null) {
+                    // Found a variable identifier that will be renamed
+                    var newVarName = options.namePrefix + varCount + options.nameSuffix;
+                    varCount++;
+                    sourceCode = esrCtx.rename(id, newVarName);
+                    tokens = esprima.tokenize(sourceCode, {comment: true, range: true});
+                }
+            }
+            id = null;
             i++;
+        }
+
+    } else {
+        // Iterate over individual characters instead of tokens
+        esrCtx = new esrefactor.Context(sourceCode);
+
+        // EXTREMELY SLOW TECHNIQUE
+        // https://apis.google.com/js/platform.js Renamed variables: 1021
+        while (i < sourceCode.length) {
+            if (options.verbose) {
+                process.stderr.write('  [Refactor|Uniquify' + ((options.groupNumber<0 || options.groupCount<0) ? '' : ('|Line-by-Line ('+options.groupNumber+'/'+options.groupCount)+')') + '] ' + (i+1) + '/' + sourceCode.length + ' (~' + (Math.floor((i/sourceCode.length)*10000)/100) + '%) | Elapsed: ' + Math.floor(((Date.now()-startTimeMs)/1000)/60) + ' minutes | Renamed variables: ' + varCount + '\r');
+            }
+            var id = null;
+            try {
+                id = esrCtx.identify(i);
+            } catch (err) {
+                console.error('');
+                console.error(err);
+            }
+            if (id != null) {
+                // Found a variable identifier
+                var idEnd = i + id.identifier.name.length;
+                if (id.identifier.name.length <= options.lengthThreshold) {
+                    // Found a variable that will be renamed
+                    var newVarName = options.namePrefix + varCount + options.nameSuffix;
+                    varCount++;
+                    sourceCode = esrCtx.rename(id, newVarName);
+                    esrCtx = new esrefactor.Context(sourceCode);
+                }
+                i = idEnd;
+            } else {
+                i++;
+            }
         }
     }
     
@@ -314,51 +377,21 @@ function uniquifyVariableNames(sourceCode, options) {
 }
 
 
-// Synchronously fetches web data (function doesn't return until the full response is received).
-//
-// Accepts additional arguments in an options object; default values are as follows:
-//   {
-//       verifyCert: process.env.NODE_TLS_REJECT_UNAUTHORIZED,
-//       curlCmd: 'curl'
-//   }
-function httpGetSync(url, options) {
-    if (options == null) {
-        options = {};
-    }
-    var verifyCertEnv = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-    if (options.verifyCert == null) {
-        if (verifyCertEnv == null) {
-            options.verifyCert = true;
-        } else {
-            options.verifyCert = !!parseInt(verifyCertEnv);
-        }
-    }
-    // Check for custom curl command/location
-    if (options.curlCmd == null) {
-        options.curlCmd = 'curl';
-    }
-    // Check whether curl is accessible
-    var subProc = child_process.spawnSync(options.curlCmd, ['-h']);
-    if (subProc.status != 0) {
-        throw Error('Failed to run curl ("' + options.curlCmd + ' -h" returned ' + subProc.status +
-                    '). curl must be installed to fetch remote JS data.');
-    }
+// Remove unsightly minification artifacts.
+// More information here:
+//  https://garote.livejournal.com/231284.html
+function makeDirectReplacements(sourceCode) {
+    var replacements = [
+        ['void 0', 'undefined'],
+        ['!1', 'false'],
+        ['!0', 'true'],
+    ];
 
-    if (url.startsWith('-') || !(url.toLowerCase().startsWith('http://') || url.toLowerCase().startsWith('https://'))) {
-        throw URIError('Unsupported URL: ' + url);
+    for (var i = 0; i < replacements.length; i++) {
+        var replacement = replacements[i];
+        sourceCode = sourceCode.replaceAll(replacement[0], replacement[1]);
     }
-
-    cmdArgs = [ '-s' ];
-    if (!options.verifyCert) {
-        cmdArgs.push('-k');
-    }
-    cmdArgs.push(url);
-    subProc = child_process.spawnSync(options.curlCmd, cmdArgs);
-    if (subProc.status != 0) {
-        throw Error('Failed to obtain remote data; subprocess returned ' + subProc.status);
-    }
-
-    return '' + subProc.stdout;
+    return sourceCode;
 }
 
 
@@ -375,6 +408,12 @@ function main(isInteractiveMode) {
                 short: 'h',
                 default: false,
             },
+            // Pipe data from stdin
+            'stdin': {
+                type: 'boolean',
+                short: 'P',
+                default: false,
+            },
             // Check whether to verify TLS/SSL certificates for remotely-fetched JS files
             'insecure': {
                 type: 'boolean',
@@ -386,6 +425,12 @@ function main(isInteractiveMode) {
                 type: 'string',
                 short: 'p',
                 default: 'curl',
+            },
+            // Maximum buffer size for remotely-fetched JS files
+            'max-buffer': {
+                type: 'string',
+                short: 'B',
+                default: ''+DEFAULT_MAX_BUF_SZ,
             },
             // Optional interactive mode to play with the data after execution (e.g., for troubleshooting)
             'interactive': {
@@ -411,6 +456,12 @@ function main(isInteractiveMode) {
             'no-format': {
                 type: 'boolean',
                 short: 'F',
+                default: false,
+            },
+            // Iterate over characters instead of tokens during refactoring. Significantly slower; may produce slightly different output
+            'char-iter': {
+                type: 'boolean',
+                short: 'C',
                 default: false,
             },
             // (EXPERIMENTAL) Attempt to refactor code line by line (rather than the whole file at once). Useful for some react-native deployments
@@ -451,7 +502,7 @@ function main(isInteractiveMode) {
     const args = parsedArgs.values;
     const inputFiles = parsedArgs.positionals;
 
-    if (args['help']) {
+    if (args['help'] || (inputFiles.length < 1 && !args['stdin'])) {
         printUsage();
     }
 
@@ -474,6 +525,11 @@ function main(isInteractiveMode) {
         throw RangeError('-I|--indent must be non-negative (received ' + args['indent'] + ')');
     }
 
+    args['max-buffer'] = parseInt(args['max-buffer']);
+    if (args['max-buffer'] <= 0) {
+        throw RangeError('-B|--max-buffer must be non-negative (received ' + args['max-buffer'] + ')');
+    }
+
     var renameVariables = !args['no-rename'];
     var doFormatCode = !args['no-format'];
     var indentChar = args['tab'] ? '\t' : ' ';
@@ -494,14 +550,20 @@ function main(isInteractiveMode) {
         process.exit(0);
     }
 
+    if (args['stdin']) {
+        if (inputFiles.length === 0 || inputFiles[0] !== process.stdin.fd) {
+            inputFiles.unshift(process.stdin.fd);
+        }
+    }
+
     // For each input file, extract the data
     for (var i = 0; i < inputFiles.length; i++) {
         inFilePath = inputFiles[i];
         hasHashbang = false;
 
-        if (inFilePath.toLowerCase().startsWith('http://') || inFilePath.toLowerCase().startsWith('https://')) {
+        if (inFilePath !== process.stdin.fd && (inFilePath.toLowerCase().startsWith('http://') || inFilePath.toLowerCase().startsWith('https://'))) {
             // Remote JS file
-            inFileData = httpGetSync(inFilePath, {verifyCert: !args['insecure'], curlCmd: args['curl-path']});
+            inFileData = jsretkLib.httpGetSync(inFilePath, {verifyCert: !args['insecure'], curlCmd: args['curl-path'], maxBuffer: args['max-buffer']});
 
             // Construct output file path
             var parsedUrl = urlUtils.parse(inFilePath);
@@ -518,7 +580,11 @@ function main(isInteractiveMode) {
             inFileData = fs.readFileSync(inFilePath, 'utf8');
 
             // Construct output file path
-            outFilePath = path.join(args['out-dir'], path.basename(inFilePath));
+            if (inFilePath === process.stdin.fd) {
+                outFilePath = path.join(args['out-dir'], 'stdin.js');
+            } else {
+                outFilePath = path.join(args['out-dir'], path.basename(inFilePath));
+            }
         }
 
         // Check whether output file already exists
@@ -551,10 +617,10 @@ function main(isInteractiveMode) {
                         console.error('[Refactor|Line-by-Line (EXPERIMENTAL)] ' + (l+1) + '/' + lines.length + ' (~' + (Math.floor((l/lines.length)*10000)/100) + '%) | Elapsed: ' + Math.floor(((Date.now()-startTimeMs)/1000)/60) + ' minutes');
                     }
                     var line = lines[l];
-                    outFileData += uniquifyVariableNames(line, { lengthThreshold: args['rename-len'], verbose: args['verbose'], namePrefix: ('i_'+l+'_'), lineNumber: (l+1), lineCount: lines.length });
+                    outFileData += uniquifyVariableNames(line, { lengthThreshold: args['rename-len'], verbose: args['verbose'], namePrefix: ('i_'+l+'_'), iterateOverChars: args['char-iter'], groupNumber: (l+1), groupCount: lines.length });
                 }
             } else {
-                outFileData = uniquifyVariableNames(outFileData, { lengthThreshold: args['rename-len'], verbose: args['verbose'] });
+                outFileData = uniquifyVariableNames(outFileData, { lengthThreshold: args['rename-len'], verbose: args['verbose'], iterateOverChars: args['char-iter'] });
             }
         }
 
@@ -574,6 +640,9 @@ function main(isInteractiveMode) {
             //ast = escodegen.attachComments(ast, ast.comments, ast.tokens);  // Preserve comments
             outFileData = escodegen.generate(ast, {format: { indent: { style: indentStr, adjustMultilineComment: true } }, comment: true});
         }
+
+        // Do direct replacements of minified code artifacts
+        outFileData = makeDirectReplacements(outFileData);
 
         // Restore hashbang/shebang, if necessary
         if (hasHashbang && outFileData.startsWith('//')) {
@@ -608,7 +677,7 @@ function main(isInteractiveMode) {
         prompt.context.DEFAULT_OUTDIR = DEFAULT_OUTDIR;
         prompt.context.main = main;
         prompt.context.printUsage = printUsage;
-        prompt.context.httpGetSync = httpGetSync;
+        prompt.context.jsretkLib = jsretkLib;
         prompt.context.parsedArgs = parsedArgs;
         prompt.context.args = args;
         prompt.context.indentChar = indentChar;

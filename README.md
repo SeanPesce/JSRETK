@@ -4,7 +4,7 @@
 
 ## Overview  
 
-NodeJS scripts for analyzing (minified/obfuscated) JavaScript. All tools support processing of local files or remote files via HTTP(S) URL.  
+NodeJS scripts for analyzing (minified/obfuscated) JavaScript. All tools support processing of local files, remote files via HTTP(S) URL, or data from standard input.  
 
 These tools are still under heavy development, so ideas and contributions are welcome.  
 
@@ -13,14 +13,19 @@ These tools are still under heavy development, so ideas and contributions are we
 System packages:
 
 * `curl`
-* `nodejs` (18.3+)
+* [`nodejs`](https://nodejs.org) (18.3+)
 
 Node modules:
 
-* `escodegen`
-* `esprima`
-* `esrefactor`
-* `estraverse`
+* [`escodegen`](https://github.com/estools/escodegen)
+* [`esprima`](https://github.com/jquery/esprima)
+* [`estraverse`](https://github.com/estools/estraverse)
+
+**Note:** These tools ship with an updated version of [`esrefactor`](https://github.com/ariya/esrefactor)
+by [Nick LaRosa](https://github.com/cakesmith). [Nick's version](https://github.com/cakesmith/esrefactor)
+fixes some major issues with the version of the library in NPM (see the pull request
+[here](https://github.com/ariya/esrefactor/pull/9)). The PR version could also be installed directly
+with `npm install ariya/esrefactor#pull/9/head`, but I've included it here for convenience.  
 
 ## Tools  
 
@@ -37,19 +42,24 @@ node jsretk-strings.js [OPTIONS] <JS_FILE_1> [[JS_FILE_2] ...]
 Options:
 
 	[-h|--help]		Print usage and exit
+	[-P|--stdin]		Pipe data from stdin
 	[-c|--comments]		Include JavaScript comments in output
 	[-C|--comments-only]	Find ONLY JavaScript comments (no string/RegEx literals; overrides "-c")
 	[-r|--regex]		Include Regular Expression (RegEx) literals in output
 	[-R|--regex-only]	Find ONLY RegEx literals (no comments/string literals; overrides "-r")
+	[-T|--templates-only]	Find ONLY template strings (no static string/RegEx literals or comments)
 	[-m|--min]		Find strings of this length or longer (inclusive)
 	[-M|--max]		Find strings of this length or shorter (inclusive)
 	[-x|--match-regex] <ex>	Find strings that match the given Regular Expression
 	[-k|--insecure]		Don't verify TLS/SSL certificates for connections when fetching remotely-hosted JS files
 	[-p|--curl-path] <path>	Non-standard path/name for the curl command
+	[-B|--max-buffer] <n>	Maximum size (in bytes) for remotely-fetched JS files (default: 50MB)
 	[-i|--interactive]	Enter interactive NodeJS prompt after completion
 ```
 
 ### `jsretk-unminify`  
+
+**WARNING:** This script is unstable and non-performant in its current state.  
 
 This script attempts to un-minify JavaScript code by:
 
@@ -60,7 +70,7 @@ This script attempts to un-minify JavaScript code by:
 Note that the current implementation can take an extremely long time to perform uniquification, so use of the `-v|--verbose` flag is highly recommended for monitoring progress. For some codebases (e.g., some React Native deployments), the experimental `-L|--per-line` flag can reduce completion time exponentially.  
 
 ```
-$ node jsretk-unminify.js 
+$ node jsretk-unminify.js --help
 Usage:
 
 node jsretk-unminify.js [OPTIONS] <JS_FILE_1> [[JS_FILE_2] ...]
@@ -68,6 +78,7 @@ node jsretk-unminify.js [OPTIONS] <JS_FILE_1> [[JS_FILE_2] ...]
 Options:
 
 	[-h|--help]		Print usage and exit
+	[-P|--stdin]		Pipe data from stdin
 	[-v|--verbose]		Enable verbose output
 	[-o|--output-dir] <dir>	Output directory (default: "jsretk-out")
 	[-O|--overwrite]	If output file(s) exist, automatically overwrite
@@ -76,10 +87,12 @@ Options:
 	[-r|--rename-len] <n>	Rename variables if names are shorter than or equal to this value (default: 2 characters)
 	[-R|--no-rename]	Don't rename variables to unique names
 	[-F|--no-format]	Don't format the code for readability
+	[-C|--char-iter]	Iterate over characters instead of tokens during refactoring. Significantly slower; may produce slightly different output
 	[-s|--smart-rename]	(EXPERIMENTAL) Use various heuristics to attempt to generate more informative variable names
 	[-L|--per-line]		(EXPERIMENTAL) Attempt to refactor code line by line (rather than the whole file at once). Useful for some react-native deployments, but fails on many (most?) codebases
 	[-k|--insecure]		Don't verify TLS/SSL certificates for connections when fetching remotely-hosted JS files
 	[-p|--curl-path] <path>	Non-standard path/name for the curl command
+	[-B|--max-buffer] <n>	Maximum size (in bytes) for remotely-fetched JS files (default: 50MB)
 	[-i|--interactive]	Enter interactive NodeJS prompt after completion
 ```
 

@@ -14,76 +14,36 @@
 
 const { parseArgs } = require('util');
 
-const child_process = require('child_process');
 const esprima = require('esprima');
 const fs = require('fs');
 const path = require('path');
+
+const jsretkLib = require('./lib/jsretk-lib');
+
+
+const ONE_MEGABYTE = 1024*1024;
+const DEFAULT_MAX_BUF_SZ = ONE_MEGABYTE*50;  // 50MB
 
 
 function printUsage() {
     console.log('Usage:\n\n' + path.basename(process.argv[0]) + ' ' + path.basename(process.argv[1]) + ' [OPTIONS] <JS_FILE_1> [[JS_FILE_2] ...]' +
                 '\n\nOptions:\n' +
                 '\n\t[-h|--help]\t\tPrint usage and exit' +
+                '\n\t[-P|--stdin]\t\tPipe data from stdin' +
                 '\n\t[-c|--comments]\t\tInclude JavaScript comments in output' +
                 '\n\t[-C|--comments-only]\tFind ONLY JavaScript comments (no string/RegEx literals; overrides "-c")' +
                 '\n\t[-r|--regex]\t\tInclude Regular Expression (RegEx) literals in output' +
                 '\n\t[-R|--regex-only]\tFind ONLY RegEx literals (no comments/string literals; overrides "-r")' +
+                '\n\t[-T|--templates-only]\tFind ONLY template strings (no static string/RegEx literals or comments)' +
                 '\n\t[-m|--min]\t\tFind strings of this length or longer (inclusive)' +
                 '\n\t[-M|--max]\t\tFind strings of this length or shorter (inclusive)' +
                 '\n\t[-x|--match-regex] <ex>\tFind strings that match the given Regular Expression' +
                 '\n\t[-k|--insecure]\t\tDon\'t verify TLS/SSL certificates for connections when fetching remotely-hosted JS files' +
                 '\n\t[-p|--curl-path] <path>\tNon-standard path/name for the curl command' +
+                '\n\t[-B|--max-buffer] <n>\tMaximum size (in bytes) for remotely-fetched JS files (default: ' + Math.floor(DEFAULT_MAX_BUF_SZ/ONE_MEGABYTE) + 'MB)' +
                 '\n\t[-i|--interactive]\tEnter interactive NodeJS prompt after completion'
     );
     process.exit();
-}
-
-
-// Synchronously fetches web data (function doesn't return until the full response is received).
-//
-// Accepts additional arguments in an options object; default values are as follows:
-//   {
-//       verifyCert: process.env.NODE_TLS_REJECT_UNAUTHORIZED,
-//       curlCmd: 'curl'
-//   }
-function httpGetSync(url, options) {
-    if (options == null) {
-        options = {};
-    }
-    var verifyCertEnv = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-    if (options.verifyCert == null) {
-        if (verifyCertEnv == null) {
-            options.verifyCert = true;
-        } else {
-            options.verifyCert = !!parseInt(verifyCertEnv);
-        }
-    }
-    // Check for custom curl command/location
-    if (options.curlCmd == null) {
-        options.curlCmd = 'curl';
-    }
-    // Check whether curl is accessible
-    var subProc = child_process.spawnSync(options.curlCmd, ['-h']);
-    if (subProc.status != 0) {
-        throw Error('Failed to run curl ("' + options.curlCmd + ' -h" returned ' + subProc.status +
-                    '). curl must be installed to fetch remote JS data.');
-    }
-
-    if (url.startsWith('-') || !(url.toLowerCase().startsWith('http://') || url.toLowerCase().startsWith('https://'))) {
-        throw URIError('Unsupported URL: ' + url);
-    }
-
-    cmdArgs = [ '-s' ];
-    if (!options.verifyCert) {
-        cmdArgs.push('-k');
-    }
-    cmdArgs.push(url);
-    subProc = child_process.spawnSync(options.curlCmd, cmdArgs);
-    if (subProc.status != 0) {
-        throw Error('Failed to obtain remote data; subprocess returned ' + subProc.status);
-    }
-
-    return '' + subProc.stdout;
 }
 
 
@@ -93,6 +53,7 @@ function httpGetSync(url, options) {
 //   {
 //       doPrint: false,
 //       includeStringLiterals: true,
+//       includeTemplateLiterals: true,
 //       includeComments = false,
 //       includeRegex = false,
 //       minLength = 0,
@@ -108,6 +69,9 @@ function getStringTokens(tokens, options) {
     }
     if (options.includeStringLiterals == null) {
         options.includeStringLiterals = true;
+    }
+    if (options.includeTemplateLiterals == null) {
+        options.includeTemplateLiterals = true;
     }
     if (options.includeComments == null) {
         options.includeComments = false;
@@ -136,6 +100,15 @@ function getStringTokens(tokens, options) {
         if (options.includeStringLiterals && tok.type.toLowerCase().indexOf('string') >= 0) {
             // Found a string literal
             val = val.slice(1, val.length-1); // Remove quotes
+            extract = true;
+        } else if (options.includeTemplateLiterals && tok.type.toLowerCase().indexOf('template') >= 0) {
+            // Found a template literal; build the full template as one string
+            while (!(tok.type.toLowerCase().indexOf('template') >= 0 && tok.value[tok.value.length-1] == '`')) {
+                i++;
+                tok = tokens[i];
+                val += tok.value;
+            }
+            val = val.slice(1, val.length-1); // Remove quotes/backticks
             extract = true;
         } else if (options.includeComments && tok.type.toLowerCase().indexOf('comment') >= 0) {
             // Found a comment
@@ -178,6 +151,12 @@ function main(isInteractiveMode) {
                 short: 'h',
                 default: false,
             },
+            // Pipe data from stdin
+            'stdin': {
+                type: 'boolean',
+                short: 'P',
+                default: false,
+            },
             // Check whether to verify TLS/SSL certificates for remotely-fetched JS files
             'insecure': {
                 type: 'boolean',
@@ -189,6 +168,12 @@ function main(isInteractiveMode) {
                 type: 'string',
                 short: 'p',
                 default: 'curl',
+            },
+            // Maximum buffer size for remotely-fetched JS files
+            'max-buffer': {
+                type: 'string',
+                short: 'B',
+                default: ''+DEFAULT_MAX_BUF_SZ,
             },
             // Optional interactive mode to play with the data after execution (e.g., for troubleshooting)
             'interactive': {
@@ -218,6 +203,11 @@ function main(isInteractiveMode) {
                 short: 'R',
                 default: false,
             },
+            'templates-only': {
+                type: 'boolean',
+                short: 'T',
+                default: false,
+            },
             // Minimum string length (inclusive)
             'min': {
                 type: 'string',
@@ -242,18 +232,22 @@ function main(isInteractiveMode) {
     const args = parsedArgs.values;
     const inputFiles = parsedArgs.positionals;
     var includeStringLiterals = true;
+    var includeTemplateLiterals = true;
 
-    if (inputFiles.length < 1 || args['help']) {
+    if (args['help'] || (inputFiles.length < 1 && !args['stdin'])) {
         printUsage();
     }
+
+    const exclusiveFlagsErrMsg = 'Error: Only one of -C|--comments-only, -R|--regex-only, -T|--templates-only can be provided simultaneously';
 
     if (args['comments-only']) {
         args['comments'] = true;
         args['regex'] = false;
         includeStringLiterals = false;
+        includeTemplateLiterals = false;
 
-        if (args['regex-only']) {
-            console.error('Error: -C|--comments-only and -R|--regex-only can not be provided simultaneously');
+        if (args['regex-only'] || args['templates-only']) {
+            console.error(exclusiveFlagsErrMsg);
             process.exit(2);
         }
     }
@@ -262,6 +256,24 @@ function main(isInteractiveMode) {
         args['regex'] = true;
         args['comments'] = false;
         includeStringLiterals = false;
+        includeTemplateLiterals = false;
+
+        if (args['comments-only'] || args['templates-only']) {
+            console.error(exclusiveFlagsErrMsg);
+            process.exit(2);
+        }
+    }
+
+    if (args['templates-only']) {
+        args['comments'] = false;
+        args['regex'] = false;
+        includeStringLiterals = false;
+        includeTemplateLiterals = true;
+
+        if (args['comments-only'] || args['regex-only']) {
+            console.error(exclusiveFlagsErrMsg);
+            process.exit(2);
+        }
     }
 
     args['min'] = parseInt(args['min']);
@@ -274,6 +286,11 @@ function main(isInteractiveMode) {
         throw RangeError('-M|--max must be greater than or equal to -m|--min (received min=' + args['min'] + + ', max=' + args['max'] + ')');
     }
 
+    args['max-buffer'] = parseInt(args['max-buffer']);
+    if (args['max-buffer'] <= 0) {
+        throw RangeError('-B|--max-buffer must be non-negative (received ' + args['max-buffer'] + ')');
+    }
+
     if (args['match-regex'] == '') {
         args['match-regex'] = null;
     }
@@ -283,13 +300,19 @@ function main(isInteractiveMode) {
     var inFileData = null;
     var tokens = null;
 
+    if (args['stdin']) {
+        if (inputFiles.length === 0 || inputFiles[0] !== process.stdin.fd) {
+            inputFiles.unshift(process.stdin.fd);
+        }
+    }
+
     // For each input file, extract the data
     for (var i = 0; i < inputFiles.length; i++) {
         inFilePath = inputFiles[i];
 
-        if (inFilePath.toLowerCase().startsWith('http://') || inFilePath.toLowerCase().startsWith('https://')) {
+        if (inFilePath !== process.stdin.fd && (inFilePath.toLowerCase().startsWith('http://') || inFilePath.toLowerCase().startsWith('https://'))) {
             // Remote JS file
-            inFileData = httpGetSync(inFilePath, {verifyCert: !args['insecure'], curlCmd: args['curl-path']});
+            inFileData = jsretkLib.httpGetSync(inFilePath, {verifyCert: !args['insecure'], curlCmd: args['curl-path'], maxBuffer: args['max-buffer']});
         } else {
             // Local JS file
             inFileData = fs.readFileSync(inFilePath, 'utf8');
@@ -306,6 +329,7 @@ function main(isInteractiveMode) {
         getStringTokens(tokens, {
             doPrint: true,
             includeStringLiterals: includeStringLiterals,
+            includeTemplateLiterals: includeTemplateLiterals,
             includeComments: args['comments'],
             includeRegex: args['regex'],
             minLength: args['min'],
@@ -331,7 +355,7 @@ function main(isInteractiveMode) {
         prompt.context.parseArgs = parseArgs;
         prompt.context.main = main;
         prompt.context.printUsage = printUsage;
-        prompt.context.httpGetSync = httpGetSync;
+        prompt.context.jsretkLib = jsretkLib;
         prompt.context.getStringTokens = getStringTokens;
         prompt.context.parsedArgs = parsedArgs;
         prompt.context.args = args;
@@ -341,6 +365,7 @@ function main(isInteractiveMode) {
         prompt.context.tokens = tokens;
         prompt.context.parsedFileCount = parsedFileCount;
         prompt.context.includeStringLiterals = includeStringLiterals;
+        prompt.context.includeTemplateLiterals = includeTemplateLiterals;
     }
 }
 
