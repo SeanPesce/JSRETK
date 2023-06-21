@@ -673,8 +673,11 @@ function main(isInteractiveMode) {
         prompt.context.estraverse = estraverse;
         prompt.context.urlUtils = urlUtils;
         prompt.context.parseArgs = parseArgs;
+        prompt.context.ONE_MEGABYTE = ONE_MEGABYTE;
+        prompt.context.DEFAULT_MAX_BUF_SZ = DEFAULT_MAX_BUF_SZ;
         prompt.context.DEFAULT_INDENT_LEVEL = DEFAULT_INDENT_LEVEL;
         prompt.context.DEFAULT_OUTDIR = DEFAULT_OUTDIR;
+        prompt.context.DEFAULT_RENAME_LENGTH_THRESHOLD = DEFAULT_RENAME_LENGTH_THRESHOLD;
         prompt.context.main = main;
         prompt.context.printUsage = printUsage;
         prompt.context.jsretkLib = jsretkLib;
