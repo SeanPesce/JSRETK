@@ -60,7 +60,7 @@ function printUsage() {
 //       maxLength = -1,
 //       matchRegex = null
 //   }
-function getStringTokens(tokens, options) {
+function getStringTokens(inFileData, options) {
     if (options == null) {
         options = {};
     }
@@ -91,6 +91,8 @@ function getStringTokens(tokens, options) {
         options.matchRegex = null;
     }
 
+    tokens = esprima.tokenize(inFileData, {comment: options.includeComments, range: true});
+
     var results = options.doPrint ? null : [];
 
     for (var i = 0; i < tokens.length; i++) {
@@ -104,8 +106,13 @@ function getStringTokens(tokens, options) {
         } else if (options.includeTemplateLiterals && tok.type.toLowerCase().indexOf('template') >= 0) {
             // Found a template literal; build the full template as one string
             while (!(tok.type.toLowerCase().indexOf('template') >= 0 && tok.value[tok.value.length-1] == '`')) {
+                var lastTokEnd = tok.range[1];
                 i++;
                 tok = tokens[i];
+                if (lastTokEnd < tok.range[0]) {
+                    // Preserve whitespace inside template expressions
+                    val += inFileData.slice(lastTokEnd, tok.range[0]);
+                }
                 val += tok.value;
             }
             val = val.slice(1, val.length-1); // Remove quotes/backticks
@@ -324,9 +331,7 @@ function main(isInteractiveMode) {
             inFileData = '//' + inFileData.slice(2);
         }
 
-        tokens = esprima.tokenize(inFileData, {comment: args['comments']});
-
-        getStringTokens(tokens, {
+        getStringTokens(inFileData, {
             doPrint: true,
             includeStringLiterals: includeStringLiterals,
             includeTemplateLiterals: includeTemplateLiterals,
@@ -353,6 +358,8 @@ function main(isInteractiveMode) {
         var prompt = require('repl').start('> ');
         prompt.context.esprima = esprima;
         prompt.context.parseArgs = parseArgs;
+        prompt.context.ONE_MEGABYTE = ONE_MEGABYTE;
+        prompt.context.DEFAULT_MAX_BUF_SZ = DEFAULT_MAX_BUF_SZ;
         prompt.context.main = main;
         prompt.context.printUsage = printUsage;
         prompt.context.jsretkLib = jsretkLib;
@@ -362,7 +369,6 @@ function main(isInteractiveMode) {
         prompt.context.inputFiles = inputFiles;
         prompt.context.inFilePath = inFilePath;
         prompt.context.inFileData = inFileData;
-        prompt.context.tokens = tokens;
         prompt.context.parsedFileCount = parsedFileCount;
         prompt.context.includeStringLiterals = includeStringLiterals;
         prompt.context.includeTemplateLiterals = includeTemplateLiterals;
