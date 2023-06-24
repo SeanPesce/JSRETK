@@ -19,7 +19,7 @@
 //     esprima
 //     estraverse
 
-const { parseArgs } = require('util');
+const { parseArgs } = require('util');  // Requires nodejs 18.3+
 
 const escodegen = require('escodegen');
 const esprima = require('esprima');
@@ -29,27 +29,20 @@ const path = require('path');
 const urlUtils = require('url');
 
 const esrefactor = require('./lib/esrefactor-pr9');
-const jsretkLib = require('./lib/jsretk-lib');
-
-
-const ONE_MEGABYTE = 1024*1024;
-const DEFAULT_MAX_BUF_SZ = ONE_MEGABYTE*50;  // 50MB
-const DEFAULT_INDENT_LEVEL = 4;
-const DEFAULT_OUTDIR = 'jsretk-out';
-const DEFAULT_RENAME_LENGTH_THRESHOLD = 2;  // Rename variables if names are shorter than or equal to this value
+const jsretk = require('./lib/jsretk');
 
 
 function printUsage() {
-    console.log('Usage:\n\n' + path.basename(process.argv[0]) + ' ' + path.basename(process.argv[1]) + ' [OPTIONS] <JS_FILE_1> [[JS_FILE_2] ...]' +
+    console.log(`Usage:\n\n${path.basename(process.argv[0])} ${path.basename(process.argv[1])} [OPTIONS] <JS_FILE_1> [[JS_FILE_2] ...]` +
                 '\n\nOptions:\n' +
                 '\n\t[-h|--help]\t\tPrint usage and exit' +
                 '\n\t[-P|--stdin]\t\tPipe data from stdin' +
                 '\n\t[-v|--verbose]\t\tEnable verbose output' +
-                '\n\t[-o|--output-dir] <dir>\tOutput directory (default: "' + DEFAULT_OUTDIR + '")' +
+                `\n\t[-o|--output-dir] <dir>\tOutput directory (default: "${jsretk.DEFAULT_OUTDIR}")` +
                 '\n\t[-O|--overwrite]\tIf output file(s) exist, automatically overwrite' +
                 '\n\t[-t|--tab]\t\tUse tab characters ("\\t") instead of spaces for indenting formatted code' +
-                '\n\t[-I|--indent] <n>\tNumber of spaces (or tabs) used for indenting formatted code (default: ' + DEFAULT_INDENT_LEVEL + ' space' + (DEFAULT_INDENT_LEVEL==1 ? '' : 's') + ' or 1 tab)' +
-                '\n\t[-r|--rename-len] <n>\tRename variables if names are shorter than or equal to this value (default: ' + DEFAULT_RENAME_LENGTH_THRESHOLD + ' character' + (DEFAULT_RENAME_LENGTH_THRESHOLD==1 ? '' : 's') + ')' +
+                `\n\t[-I|--indent] <n>\tNumber of spaces (or tabs) used for indenting formatted code (default: ${jsretk.DEFAULT_INDENT_LEVEL} space${jsretk.DEFAULT_INDENT_LEVEL==1 ? '' : 's'} or ${jsretk.DEFAULT_INDENT_LEVEL_TAB} tab${jsretk.DEFAULT_INDENT_LEVEL_TAB==1 ? '' : 's'})` +
+                `\n\t[-r|--rename-len] <n>\tRename variables if names are shorter than or equal to this value (default: ${jsretk.DEFAULT_VAR_RENAME_LENGTH_THRESHOLD} character${jsretk.DEFAULT_VAR_RENAME_LENGTH_THRESHOLD==1 ? '' : 's'})` +
                 '\n\t[-R|--no-rename]\tDon\'t rename variables to unique names' +
                 '\n\t[-F|--no-format]\tDon\'t format the code for readability' +
                 '\n\t[-C|--char-iter]\tIterate over characters instead of tokens during refactoring. Significantly slower; may produce slightly different output' +
@@ -57,7 +50,8 @@ function printUsage() {
                 '\n\t[-L|--per-line]\t\t(EXPERIMENTAL) Attempt to refactor code line by line (rather than the whole file at once). Useful for some react-native deployments, but fails on many (most?) codebases' +
                 '\n\t[-k|--insecure]\t\tDon\'t verify TLS/SSL certificates for connections when fetching remotely-hosted JS files' +
                 '\n\t[-p|--curl-path] <path>\tNon-standard path/name for the curl command' +
-                '\n\t[-B|--max-buffer] <n>\tMaximum size (in bytes) for remotely-fetched JS files (default: ' + Math.floor(DEFAULT_MAX_BUF_SZ/ONE_MEGABYTE) + 'MB)' +
+                `\n\t[-B|--max-buffer] <n>\tMaximum size (in bytes) for remotely-fetched JS files (default: ${Math.floor(jsretk.DEFAULT_MAX_BUF_SZ/jsretk.ONE_MEGABYTE)}MB)` +
+                `\n\t[-E|--encoding] <enc>\tText encoding for local input/output files (default: "${jsretk.DEFAULT_TEXT_ENCODING}")` +
                 '\n\t[-i|--interactive]\tEnter interactive NodeJS prompt after completion'
     );
     process.exit();
@@ -84,7 +78,7 @@ function renameAllInstancesOfIdentifier(ast, oldName, newName, options) {
     }
 
     if (options.verbose) {
-        console.error(options.logTag + oldName + '\t->\t' + newName);
+        console.error(`${options.logTag}${oldName}\t->\t${newName}`);
     }
 
     estraverse.traverse(ast, {
@@ -229,23 +223,23 @@ function smartRename_TokenOrderHeuristic(ast, options) {
         if (renameCandidates[oldName].length == 1) {
             // Candidate was only assigned to 1 unique name, so we'll use that name
             var newName = renameCandidates[oldName][0];
-            var tmpNewName = 'tmp_' + newName;  // Some new names are built-in properties (e.g., protoypes), so we need to pre-pend something to avoid dangerous name collisions
+            var tmpNewName = `tmp_${newName}`;  // Some new names are built-in properties (e.g., protoypes), so we need to pre-pend something to avoid dangerous name collisions
             if (newNames[tmpNewName] == null) {
                 newNames[tmpNewName] = 0;
             }
-            var newNameFinal = options.renamePrefix + newName + '_' + newNames[tmpNewName] + options.renameSuffix;
+            var newNameFinal = `${options.renamePrefix}${newName}_${newNames[tmpNewName]}${options.renameSuffix}`;
             renameAllInstancesOfIdentifier(ast, oldName, newNameFinal, { verbose: options.verbose, logTag: logTag });
             newNames[tmpNewName]++; // Iterate counter to keep new names unique
             renameCount++;
 
         } else {
             if (options.verbose) {
-                console.error(logTag + 'Multiple name candidates found for ' + oldName + ' (skipping rename): ' + renameCandidates[oldName]);
+                console.error(`${logTag}Multiple name candidates found for ${oldName} (skipping rename): ${renameCandidates[oldName]}`);
             }
         }
     }
     if (options.verbose) {
-        console.error(logTag + 'Renamed ' + renameCount + ' variable' + (renameCount == 1 ? '' : 's'));
+        console.error(`${logTag}Renamed ${renameCount} variable${renameCount == 1 ? '' : 's'}`);
     }
     return renameCount;
 }
@@ -255,7 +249,7 @@ function smartRename_TokenOrderHeuristic(ast, options) {
 //
 // Accepts additional arguments in an options object; default values are as follows:
 //   {
-//       lengthThreshold: DEFAULT_RENAME_LENGTH_THRESHOLD,
+//       lengthThreshold: jsretk.DEFAULT_VAR_RENAME_LENGTH_THRESHOLD,
 //       namePrefix: 'i_',
 //       nameSuffix: '_',
 //       verbose: false,
@@ -268,12 +262,12 @@ function uniquifyVariableNames(sourceCode, options) {
         options = {};
     }
     if (options.lengthThreshold == null) {
-        options.lengthThreshold = parseInt(DEFAULT_RENAME_LENGTH_THRESHOLD);
+        options.lengthThreshold = parseInt(jsretk.DEFAULT_VAR_RENAME_LENGTH_THRESHOLD);
     }
     // Rename variables if names are shorter than or equal to this value
     options.lengthThreshold = parseInt(options.lengthThreshold);
     if (options.lengthThreshold < 0) {
-        throw RangeError('options.lengthThreshold must be non-negative (received ' + options.lengthThreshold + ')');
+        throw RangeError(`options.lengthThreshold must be non-negative (received ${options.lengthThreshold})`);
     }
     if (options.namePrefix == null) {
         options.namePrefix = 'i_';
@@ -430,7 +424,13 @@ function main(isInteractiveMode) {
             'max-buffer': {
                 type: 'string',
                 short: 'B',
-                default: ''+DEFAULT_MAX_BUF_SZ,
+                default: jsretk.DEFAULT_MAX_BUF_SZ.toString(),
+            },
+            // Text encoding for local input/output files
+            'encoding': {
+                type: 'string',
+                short: 'E',
+                default: jsretk.DEFAULT_TEXT_ENCODING,
             },
             // Optional interactive mode to play with the data after execution (e.g., for troubleshooting)
             'interactive': {
@@ -446,7 +446,7 @@ function main(isInteractiveMode) {
             'rename-len': {
                 type: 'string',
                 short: 'r',
-                default: DEFAULT_RENAME_LENGTH_THRESHOLD.toString(),
+                default: jsretk.DEFAULT_VAR_RENAME_LENGTH_THRESHOLD.toString(),
             },
             'no-rename': {
                 type: 'boolean',
@@ -484,7 +484,7 @@ function main(isInteractiveMode) {
             'out-dir': {
                 type: 'string',
                 short: 'o',
-                default: DEFAULT_OUTDIR,
+                default: jsretk.DEFAULT_OUTDIR,
             },
             'indent': {
                 type: 'string',
@@ -508,26 +508,26 @@ function main(isInteractiveMode) {
 
     args['rename-len'] = parseInt(args['rename-len']);
     if (args['rename-len'] < 0) {
-        throw RangeError('-r|--rename-len must be non-negative (received ' + args['rename-len'] + ')');
+        throw RangeError(`-r|--rename-len must be non-negative (received ${args['rename-len']})`);
     }
 
     if (args['tab'] && args['indent'] === '') {
         // Tabs and default indentation level
-        args['indent'] = 1;
+        args['indent'] = parseInt(jsretk.DEFAULT_INDENT_LEVEL_TAB);
     } else if (args['indent'] === '') {
         // Spaces and default indentation level
-        args['indent'] = parseInt(DEFAULT_INDENT_LEVEL);
+        args['indent'] = parseInt(jsretk.DEFAULT_INDENT_LEVEL);
     } else {
         // Non-default indentation level (tabs or spaces)
         args['indent'] = parseInt(args['indent']);
     }
     if (args['indent'] < 0) {
-        throw RangeError('-I|--indent must be non-negative (received ' + args['indent'] + ')');
+        throw RangeError(`-I|--indent must be non-negative (received ${args['indent']})`);
     }
 
     args['max-buffer'] = parseInt(args['max-buffer']);
     if (args['max-buffer'] <= 0) {
-        throw RangeError('-B|--max-buffer must be non-negative (received ' + args['max-buffer'] + ')');
+        throw RangeError(`-B|--max-buffer must be non-negative (received ${args['max-buffer']})`);
     }
 
     var renameVariables = !args['no-rename'];
@@ -563,7 +563,7 @@ function main(isInteractiveMode) {
 
         if (inFilePath !== process.stdin.fd && (inFilePath.toLowerCase().startsWith('http://') || inFilePath.toLowerCase().startsWith('https://'))) {
             // Remote JS file
-            inFileData = jsretkLib.httpGetSync(inFilePath, {verifyCert: !args['insecure'], curlCmd: args['curl-path'], maxBuffer: args['max-buffer']});
+            inFileData = jsretk.httpGetSync(inFilePath, {verifyCert: !args['insecure'], curlCmd: args['curl-path'], maxBuffer: args['max-buffer']});
 
             // Construct output file path
             var parsedUrl = urlUtils.parse(inFilePath);
@@ -571,13 +571,13 @@ function main(isInteractiveMode) {
             if (!outFileName) {
                 outFileName = '_.js';
                 if (args['verbose']) {
-                    console.warn('[WARNING] Original file has no name; defaulting to "' + outFileName + ' " (' + inFilePath + ')');
+                    console.warn(`[WARNING] Original file has no name; defaulting to "${outFileName}" (${inFilePath})`);
                 }
             }
             outFilePath = path.join(args['out-dir'], outFileName);
         } else {
             // Local JS file
-            inFileData = fs.readFileSync(inFilePath, 'utf8');
+            inFileData = fs.readFileSync(inFilePath, args['encoding']);
 
             // Construct output file path
             if (inFilePath === process.stdin.fd) {
@@ -590,9 +590,9 @@ function main(isInteractiveMode) {
         // Check whether output file already exists
         if (fs.existsSync(outFilePath)) {
             if (!args['overwrite']) {
-                throw Error('File exists (use -O|--overwrite to automatically overwrite): ' + outFilePath);
+                throw Error(`File exists (use -O|--overwrite to automatically overwrite): ${outFilePath}`);
             } else if (args['verbose']) {
-                console.warn('[WARNING] File will be overwritten: ' + outFilePath);
+                console.warn(`[WARNING] File will be overwritten: ${outFilePath}`);
             }
         }
 
@@ -600,7 +600,7 @@ function main(isInteractiveMode) {
         // (otherwise esprima throws an error, as hashbangs are not valid JS)
         if (inFileData.startsWith('#!')) {
             hasHashbang = true;
-            inFileData = '//' + inFileData.slice(2);
+            inFileData = `//${inFileData.slice(2)}`;
         }
 
         outFileData = inFileData;
@@ -646,12 +646,12 @@ function main(isInteractiveMode) {
 
         // Restore hashbang/shebang, if necessary
         if (hasHashbang && outFileData.startsWith('//')) {
-            outFileData = '#!' + outFileData.slice(2);
+            outFileData = `#!${outFileData.slice(2)}`;
         }
 
         // Write refactored code to file
-        console.log(inFilePath + '\t->\t' + outFilePath);
-        fs.writeFileSync(outFilePath, outFileData, {encoding: 'utf8'});
+        console.log(`${inFilePath}\t->\t${outFilePath}`);
+        fs.writeFileSync(outFilePath, outFileData, {encoding: args['encoding']});
 
         parsedFileCount += 1;
     }
@@ -673,14 +673,9 @@ function main(isInteractiveMode) {
         prompt.context.estraverse = estraverse;
         prompt.context.urlUtils = urlUtils;
         prompt.context.parseArgs = parseArgs;
-        prompt.context.ONE_MEGABYTE = ONE_MEGABYTE;
-        prompt.context.DEFAULT_MAX_BUF_SZ = DEFAULT_MAX_BUF_SZ;
-        prompt.context.DEFAULT_INDENT_LEVEL = DEFAULT_INDENT_LEVEL;
-        prompt.context.DEFAULT_OUTDIR = DEFAULT_OUTDIR;
-        prompt.context.DEFAULT_RENAME_LENGTH_THRESHOLD = DEFAULT_RENAME_LENGTH_THRESHOLD;
         prompt.context.main = main;
         prompt.context.printUsage = printUsage;
-        prompt.context.jsretkLib = jsretkLib;
+        prompt.context.jsretk = jsretk;
         prompt.context.parsedArgs = parsedArgs;
         prompt.context.args = args;
         prompt.context.indentChar = indentChar;

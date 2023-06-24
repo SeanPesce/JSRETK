@@ -12,21 +12,16 @@
 // NodeJS package requirements:
 //     esprima
 
-const { parseArgs } = require('util');
+const { parseArgs } = require('util');  // Requires nodejs 18.3+
 
-const esprima = require('esprima');
 const fs = require('fs');
 const path = require('path');
 
-const jsretkLib = require('./lib/jsretk-lib');
-
-
-const ONE_MEGABYTE = 1024*1024;
-const DEFAULT_MAX_BUF_SZ = ONE_MEGABYTE*50;  // 50MB
+const jsretk = require('./lib/jsretk');
 
 
 function printUsage() {
-    console.log('Usage:\n\n' + path.basename(process.argv[0]) + ' ' + path.basename(process.argv[1]) + ' [OPTIONS] <JS_FILE_1> [[JS_FILE_2] ...]' +
+    console.log(`Usage:\n\n${path.basename(process.argv[0])} ${path.basename(process.argv[1])} [OPTIONS] <JS_FILE_1> [[JS_FILE_2] ...]` +
                 '\n\nOptions:\n' +
                 '\n\t[-h|--help]\t\tPrint usage and exit' +
                 '\n\t[-P|--stdin]\t\tPipe data from stdin' +
@@ -40,108 +35,11 @@ function printUsage() {
                 '\n\t[-x|--match-regex] <ex>\tFind strings that match the given Regular Expression' +
                 '\n\t[-k|--insecure]\t\tDon\'t verify TLS/SSL certificates for connections when fetching remotely-hosted JS files' +
                 '\n\t[-p|--curl-path] <path>\tNon-standard path/name for the curl command' +
-                '\n\t[-B|--max-buffer] <n>\tMaximum size (in bytes) for remotely-fetched JS files (default: ' + Math.floor(DEFAULT_MAX_BUF_SZ/ONE_MEGABYTE) + 'MB)' +
+                `\n\t[-B|--max-buffer] <n>\tMaximum size (in bytes) for remotely-fetched JS files (default: ${Math.floor(jsretk.DEFAULT_MAX_BUF_SZ/jsretk.ONE_MEGABYTE)}MB)` +
+                `\n\t[-E|--encoding] <enc>\tText encoding for local input/output files (default: "${jsretk.DEFAULT_TEXT_ENCODING}")` +
                 '\n\t[-i|--interactive]\tEnter interactive NodeJS prompt after completion'
     );
     process.exit();
-}
-
-
-// EITHER returns the list of string literals/comments, OR prints each one, but NOT both.
-//
-// Accepts additional arguments in an options object; default values are as follows:
-//   {
-//       doPrint: false,
-//       includeStringLiterals: true,
-//       includeTemplateLiterals: true,
-//       includeComments = false,
-//       includeRegex = false,
-//       minLength = 0,
-//       maxLength = -1,
-//       matchRegex = null
-//   }
-function getStringTokens(inFileData, options) {
-    if (options == null) {
-        options = {};
-    }
-    if (options.doPrint == null) {
-        options.doPrint = false;
-    }
-    if (options.includeStringLiterals == null) {
-        options.includeStringLiterals = true;
-    }
-    if (options.includeTemplateLiterals == null) {
-        options.includeTemplateLiterals = true;
-    }
-    if (options.includeComments == null) {
-        options.includeComments = false;
-    }
-    if (options.includeRegex == null) {
-        options.includeRegex = false;
-    }
-    if (options.minLength == null) {
-        options.minLength = 0;
-    }
-    options.minLength = parseInt(options.minLength);
-    if (options.maxLength == null) {
-        options.maxLength = -1;
-    }
-    options.maxLength = parseInt(options.maxLength);
-    if (options.matchRegex == null) {
-        options.matchRegex = null;
-    }
-
-    tokens = esprima.tokenize(inFileData, {comment: options.includeComments, range: true});
-
-    var results = options.doPrint ? null : [];
-
-    for (var i = 0; i < tokens.length; i++) {
-        var tok = tokens[i];
-        var val = tok.value;
-        var extract = false;
-        if (options.includeStringLiterals && tok.type.toLowerCase().indexOf('string') >= 0) {
-            // Found a string literal
-            val = val.slice(1, val.length-1); // Remove quotes
-            extract = true;
-        } else if (options.includeTemplateLiterals && tok.type.toLowerCase().indexOf('template') >= 0) {
-            // Found a template literal; build the full template as one string
-            while (!(tok.type.toLowerCase().indexOf('template') >= 0 && tok.value[tok.value.length-1] == '`')) {
-                var lastTokEnd = tok.range[1];
-                i++;
-                tok = tokens[i];
-                if (lastTokEnd < tok.range[0]) {
-                    // Preserve whitespace inside template expressions
-                    val += inFileData.slice(lastTokEnd, tok.range[0]);
-                }
-                val += tok.value;
-            }
-            val = val.slice(1, val.length-1); // Remove quotes/backticks
-            extract = true;
-        } else if (options.includeComments && tok.type.toLowerCase().indexOf('comment') >= 0) {
-            // Found a comment
-            extract = true;
-        } else if (options.includeRegex && tok.type.toLowerCase().indexOf('regularexpression') >= 0) {
-            // Found a RegEx literal
-            extract = true;
-        }
-        // Check length
-        if (val.length < options.minLength || (options.maxLength >= 0 && val.length > options.maxLength)) {
-            extract = false;
-        }
-        if (options.matchRegex != null && !RegExp(options.matchRegex).test(val)) {
-            extract = false;
-        }
-        
-        if (extract) {
-            if (options.doPrint) {
-                console.log(val);
-            } else {
-                results.push(val);
-            }
-        }
-    }
-
-    return results;
 }
 
 
@@ -180,7 +78,13 @@ function main(isInteractiveMode) {
             'max-buffer': {
                 type: 'string',
                 short: 'B',
-                default: ''+DEFAULT_MAX_BUF_SZ,
+                default: jsretk.DEFAULT_MAX_BUF_SZ.toString(),
+            },
+            // Text encoding for local input/output files
+            'encoding': {
+                type: 'string',
+                short: 'E',
+                default: jsretk.DEFAULT_TEXT_ENCODING,
             },
             // Optional interactive mode to play with the data after execution (e.g., for troubleshooting)
             'interactive': {
@@ -285,17 +189,17 @@ function main(isInteractiveMode) {
 
     args['min'] = parseInt(args['min']);
     if (args['min'] < 0) {
-        throw RangeError('-m|--min must be non-negative (received ' + args['min'] + ')');
+        throw RangeError(`-m|--min must be non-negative (received ${args['min']})`);
     }
 
     args['max'] = parseInt(args['max']);
     if (args['max'] >= 0 && args['min'] > args['max']) {
-        throw RangeError('-M|--max must be greater than or equal to -m|--min (received min=' + args['min'] + + ', max=' + args['max'] + ')');
+        throw RangeError(`-M|--max must be greater than or equal to -m|--min (received min=${args['min']}, max=${args['max']})`);
     }
 
     args['max-buffer'] = parseInt(args['max-buffer']);
     if (args['max-buffer'] <= 0) {
-        throw RangeError('-B|--max-buffer must be non-negative (received ' + args['max-buffer'] + ')');
+        throw RangeError(`-B|--max-buffer must be non-negative (received ${args['max-buffer']})`);
     }
 
     if (args['match-regex'] == '') {
@@ -305,7 +209,6 @@ function main(isInteractiveMode) {
     var parsedFileCount = 0;
     var inFilePath = null;
     var inFileData = null;
-    var tokens = null;
 
     if (args['stdin']) {
         if (inputFiles.length === 0 || inputFiles[0] !== process.stdin.fd) {
@@ -319,19 +222,19 @@ function main(isInteractiveMode) {
 
         if (inFilePath !== process.stdin.fd && (inFilePath.toLowerCase().startsWith('http://') || inFilePath.toLowerCase().startsWith('https://'))) {
             // Remote JS file
-            inFileData = jsretkLib.httpGetSync(inFilePath, {verifyCert: !args['insecure'], curlCmd: args['curl-path'], maxBuffer: args['max-buffer']});
+            inFileData = jsretk.httpGetSync(inFilePath, {verifyCert: !args['insecure'], curlCmd: args['curl-path'], maxBuffer: args['max-buffer']});
         } else {
             // Local JS file
-            inFileData = fs.readFileSync(inFilePath, 'utf8');
+            inFileData = fs.readFileSync(inFilePath, args['encoding']);
         }
 
         // If the first line of the file is a hashbang/shebang statement, comment it out before parsing
         // (otherwise esprima throws an error, as hashbangs are not valid JS)
         if (inFileData.startsWith('#!')) {
-            inFileData = '//' + inFileData.slice(2);
+            inFileData = `//${inFileData.slice(2)}`;
         }
 
-        getStringTokens(inFileData, {
+        jsretk.getStringTokens(inFileData, {
             doPrint: true,
             includeStringLiterals: includeStringLiterals,
             includeTemplateLiterals: includeTemplateLiterals,
@@ -356,14 +259,10 @@ function main(isInteractiveMode) {
     }
     if (!isInteractiveMode && args['interactive']) {
         var prompt = require('repl').start('> ');
-        prompt.context.esprima = esprima;
         prompt.context.parseArgs = parseArgs;
-        prompt.context.ONE_MEGABYTE = ONE_MEGABYTE;
-        prompt.context.DEFAULT_MAX_BUF_SZ = DEFAULT_MAX_BUF_SZ;
         prompt.context.main = main;
         prompt.context.printUsage = printUsage;
-        prompt.context.jsretkLib = jsretkLib;
-        prompt.context.getStringTokens = getStringTokens;
+        prompt.context.jsretk = jsretk;
         prompt.context.parsedArgs = parsedArgs;
         prompt.context.args = args;
         prompt.context.inputFiles = inputFiles;
