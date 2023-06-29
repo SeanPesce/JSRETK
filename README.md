@@ -54,6 +54,7 @@ Options:
 	[-k|--insecure]		Don't verify TLS/SSL certificates for connections when fetching remotely-hosted JS files
 	[-p|--curl-path] <path>	Non-standard path/name for the curl command
 	[-B|--max-buffer] <n>	Maximum size (in bytes) for remotely-fetched JS files (default: 50MB)
+	[-E|--encoding] <enc>	Text encoding for local input/output files (default: "utf8")
 	[-i|--interactive]	Enter interactive NodeJS prompt after completion
 ```
 
@@ -93,6 +94,7 @@ Options:
 	[-k|--insecure]		Don't verify TLS/SSL certificates for connections when fetching remotely-hosted JS files
 	[-p|--curl-path] <path>	Non-standard path/name for the curl command
 	[-B|--max-buffer] <n>	Maximum size (in bytes) for remotely-fetched JS files (default: 50MB)
+	[-E|--encoding] <enc>	Text encoding for local input/output files (default: "utf8")
 	[-i|--interactive]	Enter interactive NodeJS prompt after completion
 ```
 
