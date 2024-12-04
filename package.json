@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "escodegen": "^2.1.0",
+    "escope": "^4.0.0",
+    "esprima": "^4.0.1",
+    "argparse": "*",
+    "source-map": "0.5.*"
+  }
+}

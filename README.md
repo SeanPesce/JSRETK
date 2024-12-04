@@ -20,6 +20,7 @@ Node modules:
 * [`escodegen`](https://github.com/estools/escodegen)
 * [`esprima`](https://github.com/jquery/esprima)
 * [`estraverse`](https://github.com/estools/estraverse)
+* [`source-map`](https://github.com/mozilla/source-map)
 
 **Note:** These tools ship with an updated version of [`esrefactor`](https://github.com/ariya/esrefactor)
 by [Nick LaRosa](https://github.com/cakesmith). [Nick's version](https://github.com/cakesmith/esrefactor)
@@ -96,6 +97,25 @@ Options:
 	[-B|--max-buffer] <n>	Maximum size (in bytes) for remotely-fetched JS files (default: 50MB)
 	[-E|--encoding] <enc>	Text encoding for local input/output files (default: "utf8")
 	[-i|--interactive]	Enter interactive NodeJS prompt after completion
+```
+
+### `jsretk-unsourcemap`  
+
+This script, based on original code from [Tim McCormack](https://github.com/timmc/), recovers JavaScript/TypeScript source code from JS/source map files (`*.js.map`).
+
+```
+$ node jsretk-unsourcemap.js --help
+usage: jsretk-unsourcemap.js [-h] src-js src-map out-dir
+
+Deobfuscate JavaScript code using a source map
+
+positional arguments:
+  src-js      Path to JavaScript file to recover
+  src-map     Path to source-map to recover from
+  out-dir     Path to directory where sources will be dumped
+
+optional arguments:
+  -h, --help  show this help message and exit
 ```
 
 ---------------------------------------------
