@@ -20,7 +20,7 @@ def fix_react_native_hermes_decompilation(fpath, iterations=DEFAULT_ITERATIONS_C
     with open(fpath, 'r') as f:
         data = f.read()
     replacements = {
-        r'\.(@@[a-zA-Z0-9_]+)': r'[`\1`]',
+        r'\.((:?[@#0-9]+)[a-zA-Z0-9_/:#]+(:?[@]+)?)': r'[`\1`]',
         r'(= /[^\n]*)(\\\\/)([^\n]*/)': r'\1\\/\3',  # This can occur multiple times in each line, so we perform multiple iterations
         ## Alternate technique: Wrap bad regexes in strings (not true to the original code)
         # r"= (/[^'\n]*\\\\/[^'\n]*/[^'\n]*);": r"= '\1';",
