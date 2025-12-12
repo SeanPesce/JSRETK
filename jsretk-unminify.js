@@ -16,13 +16,13 @@
 //
 // NodeJS package requirements:
 //     escodegen
-//     esprima
+//     esprima-next
 //     estraverse
 
 const { parseArgs } = require('util');  // Requires nodejs 18.3+
 
 const escodegen = require('escodegen');
-const esprima = require('esprima');
+const esprima = require('esprima-next');
 const estraverse = require('estraverse');
 const fs = require('fs');
 const path = require('path');

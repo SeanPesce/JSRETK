@@ -1,9 +1,10 @@
 {
   "dependencies": {
+    "argparse": "*",
     "escodegen": "^2.1.0",
     "escope": "^4.0.0",
     "esprima": "^4.0.1",
-    "argparse": "*",
+    "esprima-next": "^6.0.3",
     "source-map": "0.5.*"
   }
 }

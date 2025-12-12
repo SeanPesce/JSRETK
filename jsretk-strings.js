@@ -10,7 +10,7 @@
 //     nodejs 18.3+
 //
 // NodeJS package requirements:
-//     esprima
+//     esprima-next
 
 const { parseArgs } = require('util');  // Requires nodejs 18.3+
 

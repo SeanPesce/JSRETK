@@ -19,6 +19,7 @@ Node modules:
 
 * [`escodegen`](https://github.com/estools/escodegen)
 * [`esprima`](https://github.com/jquery/esprima)
+* [`esprima-next`](https://github.com/node-projects/esprima-next)
 * [`estraverse`](https://github.com/estools/estraverse)
 * [`source-map`](https://github.com/mozilla/source-map)
 
