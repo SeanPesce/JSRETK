@@ -20,8 +20,9 @@ def fix_react_native_hermes_decompilation(fpath, iterations=DEFAULT_ITERATIONS_C
     with open(fpath, 'r') as f:
         data = f.read()
     replacements = {
-        r'\.((:?[@#0-9]+)[a-zA-Z0-9_/:#]+(:?[@]+)?)': r'[`\1`]',
-        r'(= /[^\n]*)(\\\\/)([^\n]*/)': r'\1\\/\3',  # This can occur multiple times in each line, so we perform multiple iterations
+        r"\.((:?[@#0-9]+)[a-zA-Z0-9_:#]*[a-zA-Z_:#]+[a-zA-Z0-9_:#]*(:?[@]+)?)(?!(:?[+-]\d)|(:?.*['/]))": r'[`\1`]',  # Fix field names that start with a bad character (without matching float values or strings)
+        r"\.((:?[a-zA-Z0-9_]+)[@#]+[a-zA-Z0-9_#@]+)(?!.*['/])": r'[`\1`]',  # Fix field names with bad characters in the middle (e.g., "r1.opera#sourceloc") (without matching strings)
+        r'(= /[^\n]*)(\\\\/)([^\n]*/)': r'\1\\/\3',  # Fix bad regexes produced by hbc-decompiler (This can occur multiple times in each line, so we perform multiple iterations)
         ## Alternate technique: Wrap bad regexes in strings (not true to the original code)
         # r"= (/[^'\n]*\\\\/[^'\n]*/[^'\n]*);": r"= '\1';",
         # r'= (/[^"\n]*\\\\/[^"\n]*/[^"\n]*);': r'= "\1";',
